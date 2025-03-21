@@ -12,6 +12,7 @@ const banPath = [
 
 // 数据库初始化
 async function initDatabase() {
+  // 创建表
   await DB.prepare(`
     CREATE TABLE IF NOT EXISTS mappings (
       path TEXT PRIMARY KEY,
@@ -19,11 +20,29 @@ async function initDatabase() {
       name TEXT,
       expiry TEXT,
       enabled INTEGER DEFAULT 1,
-      isWechat INTEGER DEFAULT 0,
-      qrCodeData TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `).run();
+
+  // 检查是否需要添加新列
+  const tableInfo = await DB.prepare("PRAGMA table_info(mappings)").all();
+  const columns = tableInfo.results.map(col => col.name);
+
+  // 添加 isWechat 列（如果不存在）
+  if (!columns.includes('isWechat')) {
+    await DB.prepare(`
+      ALTER TABLE mappings 
+      ADD COLUMN isWechat INTEGER DEFAULT 0
+    `).run();
+  }
+
+  // 添加 qrCodeData 列（如果不存在）
+  if (!columns.includes('qrCodeData')) {
+    await DB.prepare(`
+      ALTER TABLE mappings 
+      ADD COLUMN qrCodeData TEXT
+    `).run();
+  }
 
   // 添加索引
   await DB.prepare(`
@@ -235,9 +254,6 @@ async function getExpiringMappings() {
     expiring: [],
     expired: []
   };
-
-  // 批量处理过期的映射
-  const expiredPaths = [];
   
   for (const row of results.results) {
     const mapping = {
@@ -252,19 +268,9 @@ async function getExpiringMappings() {
 
     if (row.status === 'expired') {
       mappings.expired.push(mapping);
-      expiredPaths.push(row.path);
     } else {
       mappings.expiring.push(mapping);
     }
-  }
-
-  // 如果有过期的映射，批量删除它们
-  if (expiredPaths.length > 0) {
-    const placeholders = expiredPaths.map(() => '?').join(',');
-    await DB.prepare(`
-      DELETE FROM mappings 
-      WHERE path IN (${placeholders})
-    `).bind(...expiredPaths).run();
   }
 
   return mappings;
@@ -491,7 +497,6 @@ export default {
 
           // 检查是否过期
           if (mapping.expiry && new Date(mapping.expiry) < new Date()) {
-            await DB.prepare('DELETE FROM mappings WHERE path = ?').bind(path).run();
             return new Response('Not Found', { status: 404 });
           }
 
