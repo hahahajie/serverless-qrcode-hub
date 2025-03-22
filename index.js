@@ -229,8 +229,21 @@ async function updateMapping(originalPath, newPath, target, name, expiry, enable
 }
 
 async function getExpiringMappings() {
-  const twoDaysFromNow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
-  const now = new Date().toISOString();
+  // 获取今天的日期（设置为今天的23:59:59）
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const now = today.toISOString();
+  
+  // 获取今天的开始时间（00:00:00）
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const dayStart = todayStart.toISOString();
+  
+  // 修改为3天后的23:59:59
+  const threeDaysFromNow = new Date(todayStart);
+  threeDaysFromNow.setDate(todayStart.getDate() + 3);
+  threeDaysFromNow.setHours(23, 59, 59, 999);
+  const threeDaysLater = threeDaysFromNow.toISOString();
 
   // 使用单个查询获取所有过期和即将过期的映射
   const results = await DB.prepare(`
@@ -238,17 +251,17 @@ async function getExpiringMappings() {
       SELECT 
         path, name, target, expiry, enabled, isWechat, qrCodeData,
         CASE 
-          WHEN expiry < ? THEN 'expired'
-          WHEN expiry <= ? THEN 'expiring'
+          WHEN datetime(expiry) < datetime(?) THEN 'expired'
+          WHEN datetime(expiry) <= datetime(?) THEN 'expiring'
         END as status
       FROM mappings 
       WHERE expiry IS NOT NULL 
-        AND expiry <= ? 
+        AND datetime(expiry) <= datetime(?) 
         AND enabled = 1
     )
     SELECT * FROM categorized_mappings
     ORDER BY expiry ASC
-  `).bind(now, twoDaysFromNow, twoDaysFromNow).all();
+  `).bind(dayStart, threeDaysLater, threeDaysLater).all();
 
   const mappings = {
     expiring: [],
@@ -495,9 +508,93 @@ export default {
             return new Response('Not Found', { status: 404 });
           }
 
-          // 检查是否过期
-          if (mapping.expiry && new Date(mapping.expiry) < new Date()) {
-            return new Response('Not Found', { status: 404 });
+          // 检查是否过期 - 使用当天23:59:59作为失效判断时间
+          if (mapping.expiry) {
+            const today = new Date();
+            today.setHours(23, 59, 59, 999);
+            if (new Date(mapping.expiry) < today) {
+              const expiredHtml = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>链接已过期</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            margin: 0;
+            padding: 16px;
+            min-height: 100vh;
+            display: flex;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f7f7f7;
+            box-sizing: border-box;
+        }
+        .container {
+            margin: auto;
+            padding: 24px 16px;
+            width: calc(100% - 32px);
+            max-width: 320px;
+            text-align: center;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        .title {
+            font-size: 22px;
+            font-weight: 600;
+            margin: 0 0 16px;
+            color: #333;
+        }
+        .message {
+            font-size: 16px;
+            color: #666;
+            margin: 16px 0;
+            line-height: 1.5;
+        }
+        .info {
+            font-size: 14px;
+            color: #999;
+            margin-top: 20px;
+        }
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #1a1a1a;
+            }
+            .container {
+                background: #2a2a2a;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            }
+            .title {
+                color: #e0e0e0;
+            }
+            .message {
+                color: #aaa;
+            }
+            .info {
+                color: #777;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">${mapping.name ? mapping.name + ' 已过期' : '链接已过期'}</h1>
+        <p class="info">过期时间：${new Date(mapping.expiry).toLocaleDateString()}</p>
+        <p class="info">如需访问，请联系管理员更新链接</p>
+    </div>
+</body>
+</html>`;
+              return new Response(expiredHtml, {
+                status: 404,
+                headers: {
+                  'Content-Type': 'text/html;charset=UTF-8',
+                  'Cache-Control': 'no-store'
+                }
+              });
+            }
           }
 
           // 如果是微信二维码，返回活码页面
@@ -619,10 +716,7 @@ export default {
     
     // 初始化数据库
     await initDatabase();
-    
-    // 先清理过期的映射
-    await cleanupExpiredMappings(100);
-    
+        
     // 获取过期和即将过期的映射报告
     const result = await getExpiringMappings();
 
